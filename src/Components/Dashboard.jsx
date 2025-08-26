@@ -19,6 +19,7 @@ export default function Dashboard() {
   const [user, setUser] = useState(null)
   const [uploadedFiles, setUploadedFiles] = useState([])
   const [uploading, setUploading] = useState(false)
+  const [progress, setProgress] = useState(0) // Track upload progress
   const [viewMode, setViewMode] = useState("grid")
   const [searchText, setSearchText] = useState("")
   const [profileOpen, setProfileOpen] = useState(false)
@@ -74,31 +75,43 @@ export default function Dashboard() {
     if (!file || !user) return
 
     if (file.size > 10 * 1024 * 1024) {
-      toast.error(`File ${file.name} is too large (max 10MB)`) 
+      toast.error(`File ${file.name} is too large (max 10MB)`)
       return
     }
 
     setUploading(true)
+    setProgress(0) // Reset progress
+
     try {
-    
-      // Upload file to Cloudinary
+      // Upload file to Cloudinary with progress tracking
       const formData = new FormData()
       formData.append("file", file)
-      formData.append("upload_preset", "FireDrive") // Create an unsigned upload preset in Cloudinary
+      formData.append("upload_preset", "FireDrive")
       formData.append("folder", `files/${user.uid}`)
 
-      const response = await fetch(
-        `https://api.cloudinary.com/v1_1/drqbmfqk6/auto/upload`,
-        {
-          method: "POST",
-          body: formData,
-        }
-      )
-      if (!response.ok) {
-        throw new Error("Failed to upload file to Cloudinary")
-      } 
-      const data = await response.json()
+      const xhr = new XMLHttpRequest()
+      xhr.open("POST", `https://api.cloudinary.com/v1_1/drqbmfqk6/auto/upload`, true)
 
+      // Track upload progress
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100)
+          setProgress(percent)
+        }
+      }
+
+      // Handle upload completion
+      const response = await new Promise((resolve, reject) => {
+        xhr.onload = () => resolve(xhr)
+        xhr.onerror = () => reject(new Error("Upload failed"))
+        xhr.send(formData)
+      })
+
+      if (response.status !== 200) {
+        throw new Error("Failed to upload file to Cloudinary")
+      }
+
+      const data = JSON.parse(response.responseText)
       if (!data.secure_url) {
         throw new Error("Upload to Cloudinary failed")
       }
@@ -110,21 +123,19 @@ export default function Dashboard() {
         size: file.size,
         uploadedAt: new Date().toISOString(),
         userId: user.uid,
-        publicId: data.public_id, // Store Cloudinary public_id for deletion
+        publicId: data.public_id,
       }
 
       const docRef = await addDoc(collection(db, "files"), fileData)
-
-      // Update local state
-      setFiles((prev) => [...prev, { id: docRef.id, ...fileData }])
-
-      // Clear the input
+      setUploadedFiles((prev) => [...prev, { id: docRef.id, ...fileData }])
+      toast.success(`Uploaded ${file.name}`)
       e.target.value = ""
     } catch (error) {
-      alert("Upload failed. Please try again.")
+      toast.error("Upload failed: " + error.message)
       console.error("Upload error:", error)
     } finally {
       setUploading(false)
+      setProgress(0) // Reset progress after completion
     }
   }
 
@@ -235,11 +246,18 @@ export default function Dashboard() {
           className="fab"
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
+          style={
+            uploading
+              ? {
+                  background: `linear-gradient(to right, #ff8c00 ${progress}%, #ffd3c3 ${progress}%)`,
+                }
+              : {}
+          }
         >
-          {uploading ? "Uploading..." : "Upload"}
+          {uploading ? `${progress}%` : "Upload"}
         </button>
 
-        {/* Removed the New Folder under Upload as requested */}
+        <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
 
         <nav className="sidebar-nav">
           <button className="active-item">My Drive</button>
@@ -259,9 +277,6 @@ export default function Dashboard() {
 
       {/* Main Content */}
       <main className="content">
-        <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
-
-        {/* Section toolbar: search removed earlier; keep New Folder here */}
         <div className="section-toolbar">
           <h1>My Drive</h1>
           <div className="tools">
